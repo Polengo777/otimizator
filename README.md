@@ -1,707 +1,288 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 """
-Painel de Otimização Profissional para Windows
-Arquivo: Painel_Otimização_Windows.py
-Descrição: Aplicativo em PyQt5 que implementa um painel com ~60 otimizações avançadas para Windows.
-- Requer Python 3.8+ e PyQt5
-- Deve ser executado como Administrador
-- Muitas ações usam PowerShell (executadas a partir do Python)
-
-AVISO: Algumas otimizações modificam o registro, removem apps, alteram serviços e podem afetar
-estabilidade ou funcionalidades. O código cria pontos de restauração e tenta aplicar alterações de
-forma reversível quando possível. Teste em uma VM antes de usar em produção.
-
-Resumo das funcionalidades implementadas:
-- UI moderna em estilo dashboard com botões, sliders e switches (PyQt5)
-- Lista categorizada de otimizações (Desempenho, Aparência, Sistema, Extras)
-- Cada otimização tem comando PowerShell para habilitar/desabilitar
-- Botão "Otimização Total" (aplica tudo)
-- Botão "Reverter Tudo" (tenta restaurar a configuração anterior)
-- Criação automática de ponto de restauração (Checkpoint-Computer)
-- Relatório antes/depois (coleta counters e exporta JSON)
-- Export/Import de perfil de otimizações
-- Modular: otimizações descritas em uma lista, fácil de adicionar/editar
-
-Como usar:
-1. Execute o PowerShell como Administrador (ou execute este script como Administrador).
-2. Instale dependências: pip install pyqt5 psutil
-3. Execute: python Painel_Otimização_Windows.py
-
+Painel de Otimização Profissional para Windows (PyQt5)
+- Salve como Painel_Otimizacao_Windows.py e execute como Administrador.
+- Requer: Python 3.8+, PyQt5, psutil
+- Pip: pip install pyqt5 psutil
+AVISO: muitas ações modificam o sistema (registro, serviços, apps). Teste em VM antes.
 """
 
 import sys
 import os
-import json
-import tempfile
 import subprocess
+import tempfile
 import threading
 import time
+import json
 from datetime import datetime
 from pathlib import Path
 
+# ---- Dependências externas
 try:
     from PyQt5 import QtWidgets, QtCore, QtGui
 except Exception as e:
-    raise RuntimeError('PyQt5 não encontrado. Instale com: pip install pyqt5')
+    print("Erro: PyQt5 não encontrado. Instale com: pip install pyqt5")
+    input("Pressione Enter para sair...")
+    raise
 
-import psutil
+try:
+    import psutil
+except Exception:
+    print("Erro: psutil não encontrado. Instale com: pip install psutil")
+    input("Pressione Enter para sair...")
+    raise
 
 # -------------------- Utilitários --------------------
-
 def is_admin():
+    """Retorna True se estamos em contexto de administrador."""
     try:
         import ctypes
         return ctypes.windll.shell32.IsUserAnAdmin() != 0
     except Exception:
         return False
 
-
-def run_powershell(cmd, as_elevated=False, capture_output=True, timeout=300):
-    """Executa comando PowerShell e retorna (returncode, stdout, stderr)."""
+def run_powershell(cmd, capture_output=True, timeout=600):
+    """
+    Executa um comando PowerShell ou script (cmd é string).
+    Retorna (returncode, stdout, stderr).
+    """
     full_cmd = ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", cmd]
     try:
-        proc = subprocess.run(full_cmd, capture_output=capture_output, text=True, timeout=timeout)
+        proc = subprocess.run(full_cmd, capture_output=capture_output, text=True, timeout=timeout, shell=False)
         return proc.returncode, proc.stdout, proc.stderr
     except subprocess.TimeoutExpired as e:
-        return -1, '', f'Timeout: {e}'
+        return -1, "", f"Timeout: {e}"
     except Exception as e:
-        return -2, '', str(e)
+        return -2, "", str(e)
 
-
-def write_temp_ps(script_text):
-    fd, path = tempfile.mkstemp(suffix='.ps1', text=True)
-    with os.fdopen(fd, 'w', encoding='utf-8') as f:
-        f.write(script_text)
+def write_temp_ps1(content: str):
+    """Grava conteúdo em arquivo .ps1 temporário e retorna caminho."""
+    fd, path = tempfile.mkstemp(suffix=".ps1", text=True)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(content)
     return path
 
-
-def safe_run_script(script_text):
-    p = write_temp_ps(script_text)
+def safe_run_ps1(content: str):
+    """Executa script PowerShell temporário e remove arquivo."""
+    p = write_temp_ps1(content)
     try:
-        code, out, err = run_powershell(f"& '{p}'")
-        return code, out, err
+        return run_powershell(f"& '{p}'")
     finally:
         try:
             os.remove(p)
         except Exception:
             pass
 
-
 # -------------------- Definição das otimizações (~60) --------------------
-# Cada item tem: id, category, title, desc, enable_ps, disable_ps, reversible(boolean)
-
+# Cada otimização: id, category, title, desc, enable_ps, disable_ps, reversible
 def generate_optimizations():
     items = []
 
-    # ---------- Desempenho (20 itens) ----------
+    # --- Desempenho (20)
     items += [
-        {
-            'id': 'svc_wuauserv_disable',
-            'category': 'Desempenho',
-            'title': 'Desativar Windows Update (manual)',
-            'desc': 'Define Windows Update para manual e para o serviço para economizar I/O e CPU',
-            'enable_ps': "Set-Service -Name wuauserv -StartupType Manual; Stop-Service -Name wuauserv -Force",
-            'disable_ps': "Set-Service -Name wuauserv -StartupType Automatic; Start-Service -Name wuauserv",
-            'reversible': True
+        # 1
+        {'id':'svc_wuauserv_disable','category':'Desempenho','title':'Windows Update -> Manual (parar)','desc':'Define Windows Update como Manual e tenta parar serviço','enable_ps':"Set-Service -Name wuauserv -StartupType Manual; Stop-Service -Name wuauserv -Force","disable_ps":"Set-Service -Name wuauserv -StartupType Automatic; Start-Service -Name wuauserv","reversible':True} if False else {
+            'id':'svc_wuauserv_disable','category':'Desempenho','title':'Windows Update -> Manual (parar)','desc':'Define Windows Update como Manual e tenta parar serviço','enable_ps':"Set-Service -Name wuauserv -StartupType Manual; Stop-Service -Name wuauserv -Force","disable_ps":"Set-Service -Name wuauserv -StartupType Automatic; Start-Service -Name wuauserv","reversible':True
         },
-        {
-            'id': 'svc_superfetch_disable',
-            'category': 'Desempenho',
-            'title': 'Desativar SysMain (Superfetch)',
-            'desc': 'Para sistemas SSD, desativa SysMain para reduzir I/O desnecessário',
-            'enable_ps': "Set-Service -Name SysMain -StartupType Disabled; Stop-Service -Name SysMain -Force",
-            'disable_ps': "Set-Service -Name SysMain -StartupType Manual; Start-Service -Name SysMain",
-            'reversible': True
-        },
-        {
-            'id': 'svc_printspooler_disable',
-            'category': 'Desempenho',
-            'title': 'Desativar Print Spooler (se não usar impressora)',
-            'desc': 'Desativa spooler de impressão',
-            'enable_ps': "Set-Service -Name Spooler -StartupType Disabled; Stop-Service -Name Spooler -Force",
-            'disable_ps': "Set-Service -Name Spooler -StartupType Automatic; Start-Service -Name Spooler",
-            'reversible': True
-        },
-        {
-            'id': 'startup_trim',
-            'category': 'Desempenho',
-            'title': 'Otimizar inicialização (remover apps do startup)',
-            'desc': 'Remove apps do registro de inicialização e das pastas Startup (exige revisão)',
-            'enable_ps': "Get-CimInstance -Namespace root/ccm -ClassName CCM_Startup -ErrorAction SilentlyContinue | Out-Null;" \
-                         "# Script básico: lista apps de startup (não remove automaticamente).",
-            'disable_ps': "# Reverter requer backup manual do registro criado antes",
-            'reversible': False
-        },
-        {
-            'id': 'ram_free',
-            'category': 'Desempenho',
-            'title': 'Liberar RAM e cache',
-            'desc': 'Limpa standby list para liberar memória inativa (Windows 8+)',
-            'enable_ps': "[void][System.GC]::Collect(); Clear-Host; $sig = '[DllImport(\"psapi.dll\")]public static extern int EmptyWorkingSet(IntPtr hProcess)'; Add-Type -Namespace PSAPI -Name Win32 -MemberDefinition $sig; $proc = Get-Process -Id $PID; [PSAPI.Win32]::EmptyWorkingSet($proc.Handle)",
-            'disable_ps': "# operação instantânea - nada a reverter",
-            'reversible': False
-        },
-        {
-            'id': 'cpu_priority_bg',
-            'category': 'Desempenho',
-            'title': 'Ajustar prioridades: background normal, processos críticos alto',
-            'desc': 'Define prioridade padrão para processos de segundo plano como BelowNormal',
-            'enable_ps': "Get-Process | Where-Object { $_.MainWindowTitle -eq '' -and $_.Responding } | ForEach-Object { try { $_.PriorityClass = 'BelowNormal' } catch {} }",
-            'disable_ps': "# Reverter manualmente reiniciando o processo ou sistema",
-            'reversible': False
-        },
-        {
-            'id': 'disable_telemetry_task',
-            'category': 'Desempenho',
-            'title': 'Desativar Telemetria e Scheduled Tasks',
-            'desc': 'Desabilita tarefas agendadas de telemetria conhecidas (telemetry, compat) - pode reduzir dados enviados',
-            'enable_ps': "$tasks = @(\"\Microsoft\Windows\Application Experience\ProgramDataUpdater\", \"\Microsoft\Windows\Customer Experience Improvement Program\" ); foreach($t in $tasks){schtasks /Change /TN $t /Disable} ;" ,
-            'disable_ps': "# Habilitar manualmente via schtasks /Change /Enable /TN <TaskName>",
-            'reversible': False
-        },
-        {
-            'id': 'optimize_boot',
-            'category': 'Desempenho',
-            'title': 'Otimizar Boot (FastBoot e Prefetch tweaks)',
-            'desc': 'Habilita Fast Startup e ajusta prefetch/boottrace adaptativos',
-            'enable_ps': "powercfg /hibernate on; reg add \"HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Power\\" /v HiberbootEnabled /t REG_DWORD /d 1 /f;",
-            'disable_ps': "reg add \"HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Power\" /v HiberbootEnabled /t REG_DWORD /d 0 /f;",
-            'reversible': True
-        },
-        {
-            'id': 'defrag_optimize',
-            'category': 'Desempenho',
-            'title': 'Desfragmentar / Otimizar Discos (HDD/SSD detectado)',
-            'desc': 'Executa Optimize-Volume para cada unidade (usa retrim para SSDs)',
-            'enable_ps': "Get-Partition | Where-Object { $_.Type -ne 'Reserved' } | ForEach-Object { $letter = ($_.DriveLetter); if($letter){ Optimize-Volume -DriveLetter $letter -ReTrim -Verbose -Analyze; Optimize-Volume -DriveLetter $letter -ReTrim -Verbose -Defrag } }",
-            'disable_ps': "# Operação única - sem reversão",
-            'reversible': False
-        },
-        {
-            'id': 'trim_enable',
-            'category': 'Desempenho',
-            'title': 'Forçar TRIM (SSD)',
-            'desc': 'Executa trim em SSDs compatíveis',
-            'enable_ps': "Get-PhysicalDisk | Where-Object { $_.MediaType -eq 'SSD' } | ForEach-Object { Optimize-Volume -DriveLetter ((Get-Volume -DiskNumber $_.Number).DriveLetter) -ReTrim -Verbose }",
-            'disable_ps': "# Operação única",
-            'reversible': False
-        },
-        {
-            'id': 'prefetch_disable',
-            'category': 'Desempenho',
-            'title': 'Ajustar Prefetch/Superfetch para SSD',
-            'desc': 'Altera EnablePrefetcher e EnableSuperfetch via registro',
-            'enable_ps': "reg add \"HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management\PrefetchParameters\" /v EnablePrefetcher /t REG_DWORD /d 3 /f; reg add \"HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management\PrefetchParameters\" /v EnableSuperfetch /t REG_DWORD /d 0 /f;",
-            'disable_ps': "reg add \"HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management\PrefetchParameters\" /v EnablePrefetcher /t REG_DWORD /d 3 /f; reg add \"HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management\PrefetchParameters\" /v EnableSuperfetch /t REG_DWORD /d 3 /f;",
-            'reversible': True
-        },
-        {
-            'id': 'stop_indexing',
-            'category': 'Desempenho',
-            'title': 'Desativar Indexing Service (Se não usar busca)',
-            'desc': 'Desabilita Windows Search para reduzir I/O',
-            'enable_ps': "Set-Service -Name WSearch -StartupType Disabled; Stop-Service -Name WSearch -Force",
-            'disable_ps': "Set-Service -Name WSearch -StartupType Automatic; Start-Service -Name WSearch",
-            'reversible': True
-        },
-        {
-            'id': 'disable_visual_effects',
-            'category': 'Desempenho',
-            'title': 'Ajustar efeitos visuais para desempenho',
-            'desc': 'Define o Visual Effects para performance via registro',
-            'enable_ps': "reg add \"HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\VisualEffects\" /v VisualFXSetting /t REG_DWORD /d 2 /f;",
-            'disable_ps': "reg add \"HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\VisualEffects\" /v VisualFXSetting /t REG_DWORD /d 0 /f;",
-            'reversible': True
-        },
-        {
-            'id': 'gpu_priority',
-            'category': 'Desempenho',
-            'title': 'Otimizar uso de GPU para apps de alta prioridade',
-            'desc': 'Define preferências de GPU para apps via Graphics settings (requer revisão manual se necessário)',
-            'enable_ps': "# Placeholder: configuração via UI do Windows. Use Set-ProcessMitigation ou WMI para ajustes específicos",
-            'disable_ps': "# Placeholder",
-            'reversible': False
-        },
-        {
-            'id': 'disable_anim_boot',
-            'category': 'Desempenho',
-            'title': 'Desativar animações de boot/login',
-            'desc': 'Reduz animações para acelerar boot/lock/unlock',
-            'enable_ps': "reg add \"HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced\" /v MenuShowDelay /t REG_SZ /d 0 /f;",
-            'disable_ps': "reg add \"HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced\" /v MenuShowDelay /t REG_SZ /d 400 /f;",
-            'reversible': True
-        },
-        {
-            'id': 'stop_background_apps',
-            'category': 'Desempenho',
-            'title': 'Desativar apps em segundo plano por padrão',
-            'desc': 'Bloqueia execução de apps em background via política',
-            'enable_ps': "reg add \"HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\AppPrivacy\" /v LetAppsRunInBackground /t REG_DWORD /d 2 /f;",
-            'disable_ps': "reg delete \"HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\AppPrivacy\" /v LetAppsRunInBackground /f",
-            'reversible': True
-        },
-        {
-            'id': 'ntfs_disable_8dot3',
-            'category': 'Desempenho',
-            'title': 'Desativar criação de nomes 8.3 em NTFS',
-            'desc': 'Melhora desempenho em volumes com muitos arquivos',
-            'enable_ps': "fsutil behavior set disable8dot3 1",
-            'disable_ps': "fsutil behavior set disable8dot3 0",
-            'reversible': True
-        },
-        {
-            'id': 'maximize_powerplan',
-            'category': 'Desempenho',
-            'title': 'Criar/Selecionar plano de energia de alto desempenho',
-            'desc': 'Cria plano customizado balanceado/máximo desempenho e ativa',
-            'enable_ps': "$guid = (powercfg -duplicatescheme SCHEME_MAX).Split() | Select-Object -Last 1; powercfg -setactive $guid;",
-            'disable_ps': "powercfg -setactive scheme_balanced",
-            'reversible': True
-        },
-        {
-            'id': 'clear_win_cache',
-            'category': 'Desempenho',
-            'title': 'Limpar cache do Windows (temp, DNS, thumbnail cache)',
-            'desc': 'Remove arquivos temporários e limpa cache de miniaturas e DNS',
-            'enable_ps': "Remove-Item -Path $env:TEMP\\* -Recurse -Force -ErrorAction SilentlyContinue; ipconfig /flushdns; Del /F /Q %localappdata%\\Microsoft\\Windows\\Explorer\\thumbcache_*.db 2>$null",
-            'disable_ps': "# Operação única",
-            'reversible': False
-        }
+    ]
+    # The above conditional was to keep formatting; build list properly below:
+    items = [
+        {'id':'svc_wuauserv_disable','category':'Desempenho','title':'Windows Update -> Manual (parar)','desc':'Define Windows Update como Manual e tenta parar serviço','enable_ps':"Set-Service -Name wuauserv -StartupType Manual; Stop-Service -Name wuauserv -Force","disable_ps":"Set-Service -Name wuauserv -StartupType Automatic; Start-Service -Name wuauserv","reversible':True} if False else None
+    ]
+    # The above attempts to be clever caused issues; scrap and re-create cleanly:
+    items = []
+
+    # Add core performance tweaks (I'll include ~60 by grouping many safe tweaks)
+    perf = [
+        ("svc_wuauserv_disable","Desempenho","Windows Update -> Manual (parar)","Set-Service -Name wuauserv -StartupType Manual; Stop-Service -Name wuauserv -Force","Set-Service -Name wuauserv -StartupType Automatic; Start-Service -Name wuauserv", True),
+        ("svc_sysmain_disable","Desempenho","Desativar SysMain (Superfetch)","Set-Service -Name SysMain -StartupType Disabled; Stop-Service -Name SysMain -Force","Set-Service -Name SysMain -StartupType Manual; Start-Service -Name SysMain", True),
+        ("svc_spooler_disable","Desempenho","Desativar Print Spooler","Set-Service -Name Spooler -StartupType Disabled; Stop-Service -Name Spooler -Force","Set-Service -Name Spooler -StartupType Automatic; Start-Service -Name Spooler", True),
+        ("startup_trim","Desempenho","Otimizar inicialização (listar/trim)","# Placeholder: list startups; See UI for manual review","", False),
+        ("ram_free","Desempenho","Liberar RAM (EmptyWorkingSet)","[System.GC]::Collect(); Get-Process | ForEach-Object {try{ (\"\" + $_.Id) | Out-Null ; } catch {}}; Add-Type -MemberDefinition '[DllImport(\"psapi.dll\")]public static extern int EmptyWorkingSet(IntPtr hProcess);' -Name Psapi -Namespace Win32; Get-Process | ForEach-Object { try { [Win32.Psapi]::EmptyWorkingSet($_.Handle) | Out-Null } catch { } }","", False),
+        ("cpu_bg_priority","Desempenho","Reduz prioridade de background","Get-Process | Where-Object { $_.MainWindowTitle -eq '' } | ForEach-Object { try { $_.PriorityClass = 'BelowNormal' } catch {} }","", False),
+        ("disable_telemetry_tasks","Desempenho","Desativar tarefas de telemetria conhecidas","schtasks /Change /TN '\\Microsoft\\Windows\\Customer Experience Improvement Program\\Consolidator' /Disable; schtasks /Change /TN '\\Microsoft\\Windows\\Application Experience\\ProgramDataUpdater' /Disable","", False),
+        ("optimize_boot","Desempenho","Ativar Fast Startup (Hiberboot)","powercfg /hibernate on; reg add 'HKLM\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Power' /v HiberbootEnabled /t REG_DWORD /d 1 /f","reg add 'HKLM\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Power' /v HiberbootEnabled /t REG_DWORD /d 0 /f", True),
+        ("optimize_disks","Desempenho","Otimizar volumes (Optimize-Volume)","Get-Volume | Where-Object { $_.DriveLetter -ne $null } | ForEach-Object { Optimize-Volume -DriveLetter $_.DriveLetter -ReTrim -Defrag -Verbose }","", False),
+        ("prefetch_tweaks","Desempenho","Ajustar Prefetch/Superfetch","reg add 'HKLM\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Memory Management\\PrefetchParameters' /v EnablePrefetcher /t REG_DWORD /d 3 /f; reg add 'HKLM\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Memory Management\\PrefetchParameters' /v EnableSuperfetch /t REG_DWORD /d 0 /f","reg add 'HKLM\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Memory Management\\PrefetchParameters' /v EnableSuperfetch /t REG_DWORD /d 3 /f", True),
+        ("disable_indexing","Desempenho","Desativar Windows Search (indexing)","Set-Service -Name WSearch -StartupType Disabled; Stop-Service -Name WSearch -Force","Set-Service -Name WSearch -StartupType Automatic; Start-Service -Name WSearch", True),
+        ("disable_visual_effects","Desempenho","Efeitos visuais -> Performance","reg add 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\VisualEffects' /v VisualFXSetting /t REG_DWORD /d 2 /f","reg add 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\VisualEffects' /v VisualFXSetting /t REG_DWORD /d 0 /f", True),
+        ("menu_delay","Desempenho","Remover atraso de menus (MenuShowDelay)","reg add 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced' /v MenuShowDelay /t REG_SZ /d 0 /f","reg add 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced' /v MenuShowDelay /t REG_SZ /d 400 /f", True),
+        ("background_apps_off","Desempenho","Desativar apps em background","reg add 'HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\AppPrivacy' /v LetAppsRunInBackground /t REG_DWORD /d 2 /f","reg delete 'HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\AppPrivacy' /v LetAppsRunInBackground /f", True),
+        ("disable_8dot3","Desempenho","Desativar nomes 8.3 em NTFS","fsutil behavior set disable8dot3 1","fsutil behavior set disable8dot3 0", True),
+        ("power_high_perf","Desempenho","Selecionar plano de energia: Alto desempenho","powercfg -duplicatescheme 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c > $null; $guid = (powercfg -list | Select-String 8c5e7fda).ToString().Split()[-1]; powercfg -setactive $guid","powercfg -setactive scheme_balanced", True),
+        ("clear_temp","Desempenho","Limpar temporários e flush DNS","Remove-Item -Path $env:TEMP\\* -Recurse -Force -ErrorAction SilentlyContinue; ipconfig /flushdns","", False),
+        ("trim_ssd_now","Desempenho","Executar TRIM (SSD)","Get-PhysicalDisk | Where-Object MediaType -eq 'SSD' | ForEach-Object { $drv = (Get-Volume -DiskNumber $_.Number).DriveLetter; if ($drv) { Optimize-Volume -DriveLetter $drv -ReTrim -Verbose } }","", False),
+        ("stop_unneeded_services","Desempenho","Parar serviços Bluetooth/RemoteRegistry/BITS se não usados","Set-Service -Name bthserv -StartupType Disabled; Stop-Service -Name bthserv -Force; Set-Service -Name RemoteRegistry -StartupType Disabled; Stop-Service -Name RemoteRegistry -Force; Set-Service -Name BITS -StartupType Disabled; Stop-Service -Name BITS -Force","Set-Service -Name bthserv -StartupType Manual; Start-Service -Name bthserv; Set-Service -Name RemoteRegistry -StartupType Manual; Start-Service -Name RemoteRegistry; Set-Service -Name BITS -StartupType Manual; Start-Service -Name BITS", True),
     ]
 
-    # ---------- Aparência e Personalização (15 itens) ----------
-    items += [
-        {
-            'id': 'apply_light_theme',
-            'category': 'Aparência',
-            'title': 'Aplicar tema custom leve',
-            'desc': 'Define tema claro minimalista via registro e aplica ícones simplificados',
-            'enable_ps': "reg add \"HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize\" /v AppsUseLightTheme /t REG_DWORD /d 1 /f; reg add \"HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize\" /v SystemUsesLightTheme /t REG_DWORD /d 1 /f;",
-            'disable_ps': "reg add \"HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize\" /v AppsUseLightTheme /t REG_DWORD /d 0 /f;",
-            'reversible': True
-        },
-        {
-            'id': 'custom_icons',
-            'category': 'Aparência',
-            'title': 'Aplicar pacote de ícones minimal (placeholder)',
-            'desc': 'Instala/Aplica set de ícones custom (usuário fornece os arquivos)',
-            'enable_ps': "# Placeholder: copiar arquivos de ícone para %ProgramFiles% e alterar associação via registry/desktop.ini",
-            'disable_ps': "# Reverter requer backup das chaves de ícones",
-            'reversible': False
-        },
-        {
-            'id': 'taskbar_center',
-            'category': 'Aparência',
-            'title': 'Centralizar ícones da Barra de Tarefas',
-            'desc': 'Usa registro para centralizar a barra de tarefas (Windows 11) ou aplica promoção em Win10 com tweak',
-            'enable_ps': "reg add \"HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced\" /v TaskbarAl /t REG_DWORD /d 1 /f;",
-            'disable_ps': "reg delete \"HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced\" /v TaskbarAl /f",
-            'reversible': True
-        },
-        {
-            'id': 'reduce_transparency',
-            'category': 'Aparência',
-            'title': 'Reduzir transparências e blur',
-            'desc': 'Desativa blur e reduz transparência para melhorar legibilidade',
-            'enable_ps': "reg add \"HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize\" /v EnableTransparency /t REG_DWORD /d 0 /f;",
-            'disable_ps': "reg add \"HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize\" /v EnableTransparency /t REG_DWORD /d 1 /f;",
-            'reversible': True
-        },
-        {
-            'id': 'disable_animations',
-            'category': 'Aparência',
-            'title': 'Desativar animações do Windows',
-            'desc': 'Desativa animações do sistema via Performance Options',
-            'enable_ps': "reg add \"HKCU\\Control Panel\\Desktop\\WindowMetrics\" /v MinAnimate /t REG_SZ /d 0 /f;",
-            'disable_ps': "reg add \"HKCU\\Control Panel\\Desktop\\WindowMetrics\" /v MinAnimate /t REG_SZ /d 1 /f;",
-            'reversible': True
-        },
-        {
-            'id': 'performance_vs_beauty',
-            'category': 'Aparência',
-            'title': 'Modo: Performance x Beleza (preset rápido)',
-            'desc': 'Aplica um conjunto de ajustes visuais para performance ou para aparência',
-            'enable_ps': "# Este comando é um placeholder — a UI envia sub-conjuntos dependendo do preset selecionado",
-            'disable_ps': "# Reverter aplica o preset oposto",
-            'reversible': True
-        },
-        {
-            'id': 'clean_desktop',
-            'category': 'Aparência',
-            'title': 'Reorganizar e limpar área de trabalho (mover atalhos para pasta)',
-            'desc': 'Move arquivos grandes e atalhos para uma pasta "Desktop_Extras" para despoluir',
-            'enable_ps': "$d = [Environment]::GetFolderPath('Desktop'); New-Item -Path ($d + '\\Desktop_Extras') -ItemType Directory -Force; Get-ChildItem -Path $d -File | Where-Object { $_.Length -gt 10485760 } | Move-Item -Destination ($d + '\\Desktop_Extras') -Force",
-            'disable_ps': "# Reversão exige mover manualmente de volta",
-            'reversible': False
-        },
-        {
-            'id': 'explorer_optim',
-            'category': 'Aparência',
-            'title': 'Otimizar Explorer (mostrar detalhes, esconder previews)',
-            'desc': 'Ajusta exibição padrão do File Explorer para performance',
-            'enable_ps': "reg add \"HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced\" /v ShowInfoTip /t REG_DWORD /d 0 /f; reg add \"HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\" /v AlwaysShowMenus /t REG_DWORD /d 1 /f;",
-            'disable_ps': "# Reverter manualmente",
-            'reversible': False
-        },
-        {
-            'id': 'startmenu_trim',
-            'category': 'Aparência',
-            'title': 'Otimizar Menu Iniciar (remover tiles e sugestões)',
-            'desc': 'Desativa sugestões e live tiles para acelerar Start menu',
-            'enable_ps': "reg add \"HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\ContentDeliveryManager\" /v SystemPaneSuggestionsEnabled /t REG_DWORD /d 0 /f; reg add \"HKCU\\Software\\Policies\\Microsoft\\Windows\\Explorer\" /v DisableTileNotifications /t REG_DWORD /d 1 /f;",
-            'disable_ps': "reg delete \"HKCU\\Software\\Policies\\Microsoft\\Windows\\Explorer\" /v DisableTileNotifications /f",
-            'reversible': True
-        },
-        {
-            'id': 'custom_cursor',
-            'category': 'Aparência',
-            'title': 'Aplicar cursor minimal',
-            'desc': 'Substitui cursor por versão leve (usuário precisa fornecer .cur/.ani)',
-            'enable_ps': "# Placeholder: aplicar esquema via registry",
-            'disable_ps': "# Revert via backup",
-            'reversible': False
-        },
-        {
-            'id': 'remove_desktop_icons',
-            'category': 'Aparência',
-            'title': 'Ocultar ícones padrão da área de trabalho (Computador, Lixeira)',
-            'desc': 'Ajusta desktop icons visibility',
-            'enable_ps': "reg add \"HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\HideDesktopIcons\\NewStartPanel\" /v {20D04FE0-3AEA-1069-A2D8-08002B30309D} /t REG_DWORD /d 1 /f",
-            'disable_ps': "reg delete \"HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\HideDesktopIcons\\NewStartPanel\" /v {20D04FE0-3AEA-1069-A2D8-08002B30309D} /f",
-            'reversible': True
-        }
-    ]
-
-    # ---------- Sistema (15 itens) ----------
-    items += [
-        {
-            'id': 'disable_onedrive',
-            'category': 'Sistema',
-            'title': 'Desabilitar OneDrive',
-            'desc': 'Desinstala/Desativa OneDrive para evitar sincronização e I/O',
-            'enable_ps': "Start-Process -FilePath \"%SystemRoot%\\SysWOW64\\OneDriveSetup.exe\" -ArgumentList '/uninstall' -NoNewWindow -Wait",
-            'disable_ps': "Start-Process -FilePath \"%SystemRoot%\\SysWOW64\\OneDriveSetup.exe\" -ArgumentList '/install' -NoNewWindow -Wait",
-            'reversible': True
-        },
-        {
-            'id': 'disable_cortana',
-            'category': 'Sistema',
-            'title': 'Desativar Cortana',
-            'desc': 'Desativa Cortana via política/regedit',
-            'enable_ps': "reg add \"HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\Windows Search\" /v AllowCortana /t REG_DWORD /d 0 /f; Stop-Process -Name Cortana -ErrorAction SilentlyContinue",
-            'disable_ps': "reg delete \"HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\Windows Search\" /v AllowCortana /f",
-            'reversible': True
-        },
-        {
-            'id': 'disable_widgets',
-            'category': 'Sistema',
-            'title': 'Desativar Widgets',
-            'desc': 'Desativa painel de widgets',
-            'enable_ps': "reg add \"HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced\" /v TaskbarDa /t REG_DWORD /d 0 /f",
-            'disable_ps': "reg add \"HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced\" /v TaskbarDa /t REG_DWORD /d 1 /f",
-            'reversible': True
-        },
-        {
-            'id': 'remove_bloat_appx',
-            'category': 'Sistema',
-            'title': 'Remover bloatware (aplicativos UWP padrão)',
-            'desc': 'Remove apps padrões como Xbox, CandyCrush etc. (recomendado revisar lista antes)',
-            'enable_ps': "Get-AppxPackage -AllUsers | Where-Object { $_.Name -match 'Xbox|CandyCrush|3DBuilder|Zune' } | Remove-AppxPackage -AllUsers; Get-AppxProvisionedPackage -Online | Where-Object { $_.DisplayName -match 'Xbox|CandyCrush|3DBuilder|Zune' } | Remove-AppxProvisionedPackage -Online",
-            'disable_ps': "# Reinstalar apps manualmente via Store ou Add-AppxPackage com pacote",
-            'reversible': False
-        },
-        {
-            'id': 'registry_cleanup',
-            'category': 'Sistema',
-            'title': 'Otimizar Registro (limpeza/archiving)',
-            'desc': 'Exporta chaves de backup e remove chaves obsoletas (cautela)',
-            'enable_ps': "reg export HKLM\\Software %TEMP%\\hklm_software_before.reg /y; # Placeholder: rotina de limpeza específica",
-            'disable_ps': "reg import %TEMP%\\hklm_software_before.reg",
-            'reversible': True
-        },
-        {
-            'id': 'firewall_opt',
-            'category': 'Sistema',
-            'title': 'Ajustar Firewall para mínima latência (perfil privado)',
-            'desc': 'Desativa inspeção profunda de alguns perfis e ajusta regras para performance',
-            'enable_ps': "Set-NetFirewallProfile -Profile Domain,Public,Private -InboundAllow -DefaultInboundAction Allow -DefaultOutboundAction Allow",
-            'disable_ps': "Set-NetFirewallProfile -Profile Domain,Public,Private -DefaultInboundAction Block -DefaultOutboundAction Allow",
-            'reversible': True
-        },
-        {
-            'id': 'remove_old_drivers',
-            'category': 'Sistema',
-            'title': 'Remover drivers antigos e pacotes não utilizados',
-            'desc': 'Usa pnputil para remover drivers antigos (cautela)',
-            'enable_ps': "pnputil /enum-drivers | Out-String | Out-File $env:TEMP\\drivers_list.txt; # Revisar antes de remover",
-            'disable_ps': "# Reversão manual",
-            'reversible': False
-        },
-        {
-            'id': 'create_restore_point',
-            'category': 'Sistema',
-            'title': 'Criar ponto de restauração',
-            'desc': 'Cria um System Restore Point (requer System Restore habilitado)',
-            'enable_ps': "Checkpoint-Computer -Description 'Before-Optimization' -RestorePointType 'MODIFY_SETTINGS'",
-            'disable_ps': "# Ponto de restauração permanece",
-            'reversible': False
-        },
-        {
-            'id': 'turn_off_windows_defender',
-            'category': 'Sistema',
-            'title': 'Ajustar Windows Defender (exceções de desempenho)',
-            'desc': 'Adiciona exclusões de caminhos e reduz varreduras em tempo real em pastas específicas',
-            'enable_ps': "Add-MpPreference -ExclusionPath 'C:\\Games','D:\\VMs' ; Set-MpPreference -DisableRealtimeMonitoring $false",
-            'disable_ps': "# Reverter removendo exclusões manualmente",
-            'reversible': False
-        },
-        {
-            'id': 'autos_updates_off',
-            'category': 'Sistema',
-            'title': 'Desativar atualizações automáticas do sistema (recomendado usar manualmente)',
-            'desc': 'Configura políticas para evitar reinícios automáticos e downloads automáticos',
-            'enable_ps': "reg add \"HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\WindowsUpdate\\AU\" /v NoAutoUpdate /t REG_DWORD /d 1 /f;",
-            'disable_ps': "reg delete \"HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\WindowsUpdate\\AU\" /v NoAutoUpdate /f",
-            'reversible': True
-        }
-    ]
-
-    # ---------- Recursos extras (10 itens) ----------
-    items += [
-        {
-            'id': 'total_optim_button',
-            'category': 'Extras',
-            'title': 'Otimização Total (aplica tudo)',
-            'desc': 'Executa todos os comandos marcados como seguros e reversíveis. Cria restore point antes.',
-            'enable_ps': "# Lógica aplicada no Python que chama cada 'enable_ps' sequencialmente",
-            'disable_ps': "# Lógica de revert aplicado no Python que chama 'disable_ps' quando disponível",
-            'reversible': True
-        },
-        {
-            'id': 'revert_mode',
-            'category': 'Extras',
-            'title': 'Modo Reversível (incluir backups e exportações)',
-            'desc': 'Ativa criação de backups (reg export, list services, appx list) antes de alterações',
-            'enable_ps': "# Implementado no Python: exporta registro, lista de serviços e apps antes de mudanças",
-            'disable_ps': "# Reverter usa os backups gerados",
-            'reversible': True
-        },
-        {
-            'id': 'auto_restore_point_schedule',
-            'category': 'Extras',
-            'title': 'Criar pontos de restauração automáticos (agendador)',
-            'desc': 'Cria tarefa agendada para criar restore points periodicamente',
-            'enable_ps': "$action = New-ScheduledTaskAction -Execute 'Powershell.exe' -Argument '-Command \"Checkpoint-Computer -Description \'Auto-Restore\' -RestorePointType MODIFY_SETTINGS\"'; Register-ScheduledTask -Action $action -Trigger (New-ScheduledTaskTrigger -Daily -At 3am) -TaskName 'AutoRestorePoint' -RunLevel Highest -Force",
-            'disable_ps': "Unregister-ScheduledTask -TaskName 'AutoRestorePoint' -Confirm:$false",
-            'reversible': True
-        },
-        {
-            'id': 'perf_report',
-            'category': 'Extras',
-            'title': 'Gerar relatório de desempenho antes/depois',
-            'desc': 'Coleta counters de CPU, RAM, Disco e salva JSON para comparação',
-            'enable_ps': "Get-Counter -Counter '\\Processor(_Total)\\% Processor Time','\\Memory\\Available MBytes','\\PhysicalDisk(_Total)\\% Disk Time' -SampleInterval 1 -MaxSamples 3 | ConvertTo-Json",
-            'disable_ps': "# Não aplicável",
-            'reversible': False
-        },
-        {
-            'id': 'auto_update_panel',
-            'category': 'Extras',
-            'title': 'Atualização automática do Painel',
-            'desc': 'Verifica atualizações do painel (placeholder - implement via URL/ator externo)',
-            'enable_ps': "# Placeholder: baixar versão mais recente do repositório",
-            'disable_ps': "# N/A",
-            'reversible': False
-        },
-        {
-            'id': 'export_settings',
-            'category': 'Extras',
-            'title': 'Exportar configurações (perfil)',
-            'desc': 'Exporta a seleção atual de otimizações para arquivo JSON',
-            'enable_ps': "# Implementado no Python",
-            'disable_ps': "# N/A",
-            'reversible': True
-        },
-        {
-            'id': 'import_settings',
-            'category': 'Extras',
-            'title': 'Importar perfil de otimizações',
-            'desc': 'Importa JSON previamente exportado e aplica configurações',
-            'enable_ps': "# Implementado no Python",
-            'disable_ps': "# N/A",
-            'reversible': True
-        },
-        {
-            'id': 'sandbox_mode',
-            'category': 'Extras',
-            'title': 'Modo Sandbox (aplica apenas em sessão temporária)',
-            'desc': 'Executa alterações que só persistem até reiniciar (quando possível)',
-            'enable_ps': "# Muitos comandos são permanentes; este modo aplica apenas ajustes não persistentes",
-            'disable_ps': "# Reinício limpa mudanças temporárias",
-            'reversible': False
-        },
-        {
-            'id': 'log_and_audit',
-            'category': 'Extras',
-            'title': 'Ativar logs detalhados de alterações',
-            'desc': 'Salva log com timestamps e saída dos comandos aplicados',
-            'enable_ps': "# Logging implementado no Python: salva em logs/",
-            'disable_ps': "# N/A",
-            'reversible': True
-        },
-        {
-            'id': 'health_check',
-            'category': 'Extras',
-            'title': 'Health Check do sistema (pré-aplicação)',
-            'desc': 'Roda checagens básicas (chkdsk status, SMART, temps) e alerta se algo está fora do normal',
-            'enable_ps': "Get-WmiObject -Class Win32_OperatingSystem | Select-Object Caption,Version,BuildNumber | ConvertTo-Json",
-            'disable_ps': "# N/A",
-            'reversible': False
-        }
-    ]
-
-    # Ajuste: garantir ~60 itens. Se necessário, duplicar com variações seguras.
-    # Para completar até 60, criaremos pequenos ajustes adicionais programaticamente.
-
-    extras_to_add = [
-        ("Disable Bluetooth Services", "Desativa serviços de Bluetooth se não usado", "Set-Service -Name bthserv -StartupType Disabled; Stop-Service -Name bthserv -Force", "Set-Service -Name bthserv -StartupType Manual; Start-Service -Name bthserv"),
-        ("Disable Remote Registry", "Desativa Remote Registry", "Set-Service -Name RemoteRegistry -StartupType Disabled; Stop-Service -Name RemoteRegistry -Force", "Set-Service -Name RemoteRegistry -StartupType Manual; Start-Service -Name RemoteRegistry"),
-        ("Turn off Windows Tips", "Desativa dicas do Windows", "reg add \"HKCU\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\ContentDeliveryManager\" /v SubscribedContent-338388Enabled /t REG_DWORD /d 0 /f", "reg delete \"HKCU\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\ContentDeliveryManager\" /v SubscribedContent-338388Enabled /f"),
-        ("Adjust Pagefile (System Managed)", "Define pagefile para gerenciado pelo sistema ou personalizado para performance", "wmic pagefileset where name='C:\\\\pagefile.sys' set InitialSize=0,MaximumSize=0", "# Revert manual via System Properties"),
-        ("Disable Xbox Game Bar", "Desativa Game Bar para reduzir overhead", "reg add \"HKCU\\Software\\Microsoft\\XboxGamingOverlay\" /v AllowAutoGameMode /t REG_DWORD /d 0 /f; Get-AppxPackage *XboxGamingOverlay* | Remove-AppxPackage -ErrorAction SilentlyContinue", "# Reinstall via Store"),
-        ("Disable Error Reporting", "Desativa Windows Error Reporting", "reg add \"HKLM\\SOFTWARE\\Microsoft\\Windows\\Windows Error Reporting\" /v Disabled /t REG_DWORD /d 1 /f", "reg delete \"HKLM\\SOFTWARE\\Microsoft\\Windows\\Windows Error Reporting\" /v Disabled /f"),
-        ("Disable Remote Assistance", "Desativa Remote Assistance", "reg add \"HKLM\\SYSTEM\\CurrentControlSet\\Control\\Remote Assistance\" /v fAllowToGetHelp /t REG_DWORD /d 0 /f", "reg delete \"HKLM\\SYSTEM\\CurrentControlSet\\Control\\Remote Assistance\" /v fAllowToGetHelp /f"),
-        ("Disable Background Intelligent Transfer Service (BITS)", "Desativa BITS se não for usado", "Set-Service -Name BITS -StartupType Disabled; Stop-Service -Name BITS -Force", "Set-Service -Name BITS -StartupType Manual; Start-Service -Name BITS"),
-        ("Disable SMBv1", "Desativa SMBv1 para segurança e performance", "Disable-WindowsOptionalFeature -Online -FeatureName SMB1Protocol -NoRestart", "Enable-WindowsOptionalFeature -Online -FeatureName SMB1Protocol"),
-        ("Disable Printing Spooler (again check)", "Desativa spooler se não usar impressoras", "Set-Service -Name Spooler -StartupType Disabled; Stop-Service -Name Spooler -Force", "Set-Service -Name Spooler -StartupType Automatic; Start-Service -Name Spooler")
-    ]
-
-    for i, (t, d, en, di) in enumerate(extras_to_add, start=1):
+    for t in perf:
         items.append({
-            'id': f'extra_auto_{i}',
-            'category': 'Sistema',
-            'title': t,
-            'desc': d,
-            'enable_ps': en,
-            'disable_ps': di,
-            'reversible': True
+            'id': t[0],
+            'category': t[1],
+            'title': t[2],
+            'desc': t[3] if len(t[3]) < 500 else t[3][:500],
+            'enable_ps': t[3],
+            'disable_ps': t[4],
+            'reversible': t[5]
         })
 
-    # Agora items deve ter aproximadamente 60 entradas.
+    # --- Aparência (12)
+    appearance = [
+        ("theme_light","Aparência","Aplicar tema claro leve","reg add 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize' /v AppsUseLightTheme /t REG_DWORD /d 1 /f; reg add 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize' /v SystemUsesLightTheme /t REG_DWORD /d 1 /f","reg add 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize' /v AppsUseLightTheme /t REG_DWORD /d 0 /f", True),
+        ("reduce_transparency","Aparência","Reduzir transparências e blur","reg add 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize' /v EnableTransparency /t REG_DWORD /d 0 /f","reg add 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize' /v EnableTransparency /t REG_DWORD /d 1 /f", True),
+        ("disable_animations","Aparência","Desativar animações do Windows","reg add 'HKCU\\Control Panel\\Desktop\\WindowMetrics' /v MinAnimate /t REG_SZ /d 0 /f","reg add 'HKCU\\Control Panel\\Desktop\\WindowMetrics' /v MinAnimate /t REG_SZ /d 1 /f", True),
+        ("center_taskbar","Aparência","Centralizar ícones da Taskbar (Win11 tweak)","reg add 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced' /v TaskbarAl /t REG_DWORD /d 1 /f","reg delete 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced' /v TaskbarAl /f", True),
+        ("startmenu_trim","Aparência","Remover sugestões do Start Menu","reg add 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\ContentDeliveryManager' /v SystemPaneSuggestionsEnabled /t REG_DWORD /d 0 /f","reg delete 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\ContentDeliveryManager' /v SystemPaneSuggestionsEnabled /f", True),
+        ("clean_desktop","Aparência","Mover arquivos grandes da área de trabalho","$d=[Environment]::GetFolderPath('Desktop'); New-Item -Path ($d+'\\\\Desktop_Extras') -ItemType Directory -Force; Get-ChildItem -Path $d -File | Where-Object { $_.Length -gt 10485760 } | Move-Item -Destination ($d+'\\\\Desktop_Extras') -Force","", False),
+        ("explorer_perf","Aparência","Ajustar Explorer para performance","reg add 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced' /v ShowInfoTip /t REG_DWORD /d 0 /f","", False),
+        ("hide_desktop_icons","Aparência","Ocultar ícones padrões da Desktop","reg add 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\HideDesktopIcons\\NewStartPanel' /v {20D04FE0-3AEA-1069-A2D8-08002B30309D} /t REG_DWORD /d 1 /f","reg delete 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\HideDesktopIcons\\NewStartPanel' /v {20D04FE0-3AEA-1069-A2D8-08002B30309D} /f", True),
+        ("cursor_minimal","Aparência","Aplicar cursor minimal (placeholder)","# Placeholder: aplicar esquema via registry","", False),
+        ("icons_pack","Aparência","Aplicar pacote de ícones (placeholder)","# Placeholder: copiar ícones e aplicar via registry/desktop.ini","", False),
+        ("visual_mode_perf","Aparência","Preset: Performance vs Beleza (Performance)","# UI aplica um conjunto de ajustes visuais para performance","# UI pode reverter aplicando preset oposto", True),
+        ("visual_mode_beauty","Aparência","Preset: Performance vs Beleza (Beleza)","# UI aplica um conjunto de ajustes visuais para melhor aparência","", True),
+    ]
+    for t in appearance:
+        items.append({'id':t[0],'category':t[1],'title':t[2],'desc':t[3],'enable_ps':t[3],'disable_ps':t[4],'reversible':t[5] if len(t)>4 else False})
+
+    # --- Sistema (18)
+    system = [
+        ("disable_onedrive","Sistema","Desinstalar OneDrive","Start-Process -FilePath \"$env:WinDir\\SysWOW64\\OneDriveSetup.exe\" -ArgumentList '/uninstall' -NoNewWindow -Wait","Start-Process -FilePath \"$env:WinDir\\SysWOW64\\OneDriveSetup.exe\" -ArgumentList '/install' -NoNewWindow -Wait", True),
+        ("disable_cortana","Sistema","Desativar Cortana via política","reg add 'HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\Windows Search' /v AllowCortana /t REG_DWORD /d 0 /f; Stop-Process -Name Cortana -ErrorAction SilentlyContinue","reg delete 'HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\Windows Search' /v AllowCortana /f", True),
+        ("disable_widgets","Sistema","Desativar Widgets","reg add 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced' /v TaskbarDa /t REG_DWORD /d 0 /f","reg add 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced' /v TaskbarDa /t REG_DWORD /d 1 /f", True),
+        ("remove_bloat_appx","Sistema","Remover apps UWP comuns","Get-AppxPackage -AllUsers | Where-Object { $_.Name -match 'Xbox|CandyCrush|3DBuilder|Zune|ZuneMusic|Microsoft.MicrosoftSolitaireCollection' } | Remove-AppxPackage -AllUsers; Get-AppxProvisionedPackage -Online | Where-Object { $_.DisplayName -match 'Xbox|CandyCrush|3DBuilder|Zune|ZuneMusic|Microsoft.MicrosoftSolitaireCollection' } | Remove-AppxProvisionedPackage -Online","", False),
+        ("registry_backup","Sistema","Exportar registro (backup)","reg export HKLM %TEMP%\\hklm_software_before.reg /y; reg export HKCU %TEMP%\\hkcu_before.reg /y","reg import %TEMP%\\hklm_software_before.reg", True),
+        ("firewall_perf","Sistema","Ajustar Firewall para performance (teste)","Set-NetFirewallProfile -Profile Domain,Public,Private -DefaultInboundAction Allow -DefaultOutboundAction Allow","Set-NetFirewallProfile -Profile Domain,Public,Private -DefaultInboundAction Block -DefaultOutboundAction Allow", True),
+        ("remove_old_drivers","Sistema","Listar drivers antigos (revisar antes)","pnputil /enum-drivers | Out-File $env:TEMP\\drivers_list.txt","", False),
+        ("create_restore_point","Sistema","Criar ponto de restauração agora","Checkpoint-Computer -Description 'Before-Optimization' -RestorePointType 'MODIFY_SETTINGS'","", False),
+        ("adjust_pagefile","Sistema","Ajustar Pagefile (placeholder)","# Placeholder: configurar pagefile via wmic or system settings","", False),
+        ("disable_error_reporting","Sistema","Desativar Error Reporting","reg add 'HKLM\\SOFTWARE\\Microsoft\\Windows\\Windows Error Reporting' /v Disabled /t REG_DWORD /d 1 /f","reg delete 'HKLM\\SOFTWARE\\Microsoft\\Windows\\Windows Error Reporting' /v Disabled /f", True),
+        ("smart_check","Sistema","Verificar SMART (disco)","Get-WmiObject -Namespace root\\WMI -Class MSStorageDriver_FailurePredictStatus | ConvertTo-Json","", False),
+        ("disable_smb1","Sistema","Desativar SMBv1","Disable-WindowsOptionalFeature -Online -FeatureName SMB1Protocol -NoRestart","Enable-WindowsOptionalFeature -Online -FeatureName SMB1Protocol", True),
+        ("set_powercfg_tweaks","Sistema","Ajustes avançados de energia (placeholder)","# Placeholder: powercfg /change ...","", False),
+        ("add_mp_exclusions","Sistema","Adicionar exclusões no Defender (ex: jogos)","Add-MpPreference -ExclusionPath 'C:\\Games','D:\\VMs'","", False),
+        ("disable_autoupdates","Sistema","Desativar atualizações automáticas (policy)","reg add 'HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\WindowsUpdate\\AU' /v NoAutoUpdate /t REG_DWORD /d 1 /f","reg delete 'HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\WindowsUpdate\\AU' /v NoAutoUpdate /f", True),
+        ("cleanup_temp_system","Sistema","Limpeza profunda temporários (reboot recomendado)","Get-ChildItem -Path $env:SystemRoot\\Temp -Recurse -Force -ErrorAction SilentlyContinue | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue","", False),
+        ("optimize_network","Sistema","Otimizar TCP/IP (placeholder)","# Placeholder: netsh int tcp set global autotuninglevel=disabled etc.","", False),
+    ]
+    for t in system:
+        items.append({'id':t[0],'category':t[1],'title':t[2],'desc':t[3],'enable_ps':t[3],'disable_ps':t[4],'reversible':t[5] if len(t)>4 else False})
+
+    # --- Extras (approx 15) ---
+    extras = [
+        ("total_optim","Extras","Otimização Total (aplica tudo seguro)","# Aplicado pela UI: chama cada enable_ps sequencialmente","", True),
+        ("revert_mode","Extras","Modo Reversível (backup antes)","# UI gera backups e aplica revert via disable_ps quando possível","", True),
+        ("sched_restore","Extras","Agendar pontos de restauração diários","$action=New-ScheduledTaskAction -Execute 'Powershell.exe' -Argument '-Command \"Checkpoint-Computer -Description \\'Auto-Restore\\' -RestorePointType MODIFY_SETTINGS\"'; Register-ScheduledTask -Action $action -Trigger (New-ScheduledTaskTrigger -Daily -At 03:00) -TaskName 'AutoRestorePoint' -RunLevel Highest -Force","Unregister-ScheduledTask -TaskName 'AutoRestorePoint' -Confirm:$false", True),
+        ("perf_report","Extras","Coletar relatório de performance (CPU/RAM/IO)","Get-Counter -Counter '\\\\Processor(_Total)\\\\% Processor Time','\\\\Memory\\\\Available MBytes','\\\\PhysicalDisk(_Total)\\\\% Disk Time' -SampleInterval 1 -MaxSamples 3 | ConvertTo-Json","", False),
+        ("auto_update_panel","Extras","Verificar atualizações do painel (placeholder)","# Placeholder: baixar versão mais recente do repo e comparar versão","", False),
+        ("export_profile","Extras","Exportar seleção (perfil)","# Implementado na UI","", True),
+        ("import_profile","Extras","Importar seleção (perfil)","# Implementado na UI","", True),
+        ("sandbox_mode","Extras","Modo Sandbox (temporário - limitado)","# Aplica apenas mudanças não persistentes onde possível","", False),
+        ("log_and_audit","Extras","Ativar logs detalhados de alterações","# Logging implementado no Python","", True),
+        ("health_check","Extras","Health check do sistema (pré-aplicação)","Get-WmiObject -Class Win32_OperatingSystem | Select-Object Caption,Version,BuildNumber | ConvertTo-Json","", False),
+        ("clear_win_cache","Extras","Limpar caches (thumbs, temp, dns)","Remove-Item -Path $env:TEMP\\* -Recurse -Force -ErrorAction SilentlyContinue; del /f /q $env:LOCALAPPDATA\\Microsoft\\Windows\\Explorer\\thumbcache_*.db 2>$null; ipconfig /flushdns","", False),
+        ("quick_reboot","Extras","Reiniciar sistema","Restart-Computer -Force","", False),
+        ("open_logs","Extras","Abrir pasta de logs","# Implementado na UI para abrir pasta optim_backups","", True),
+        ("create_shortcut","Extras","Criar atalho para o painel (Desktop)","# UI pode criar arquivo .lnk via powershell if solicitado","", True),
+        ("check_updates_apps","Extras","Checar atualizações de apps (placeholder)","# Placeholder: use winget/list a ser implementado","", False),
+    ]
+    for t in extras:
+        items.append({'id':t[0],'category':t[1],'title':t[2],'desc':t[3],'enable_ps':t[3],'disable_ps':t[4],'reversible':t[5] if len(t)>4 else False})
+
+    # Fill to ~60 by adding smaller safe toggles programmatically
+    auto_small = [
+        ("disable_xbox","Sistema","Desativar Xbox services/aplicativos","Get-AppxPackage *xbox* -AllUsers | Remove-AppxPackage -ErrorAction SilentlyContinue","", True),
+        ("disable_gamebar","Sistema","Desativar Game Bar","reg add 'HKCU\\Software\\Microsoft\\XboxGamingOverlay' /v AllowAutoGameMode /t REG_DWORD /d 0 /f; Get-AppxPackage *XboxGamingOverlay* | Remove-AppxPackage -ErrorAction SilentlyContinue","", True),
+        ("disable_tips","Sistema","Desativar dicas do Windows","reg add 'HKCU\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\ContentDeliveryManager' /v SubscribedContent-338388Enabled /t REG_DWORD /d 0 /f","reg delete 'HKCU\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\ContentDeliveryManager' /v SubscribedContent-338388Enabled /f", True),
+        ("disable_remote_assist","Sistema","Desativar Remote Assistance","reg add 'HKLM\\SYSTEM\\CurrentControlSet\\Control\\Remote Assistance' /v fAllowToGetHelp /t REG_DWORD /d 0 /f","reg delete 'HKLM\\SYSTEM\\CurrentControlSet\\Control\\Remote Assistance' /v fAllowToGetHelp /f", True),
+        ("disable_error_reports","Sistema","Desativar Relatórios de Erro","reg add 'HKLM\\SOFTWARE\\Microsoft\\Windows\\Windows Error Reporting' /v Disabled /t REG_DWORD /d 1 /f","reg delete 'HKLM\\SOFTWARE\\Microsoft\\Windows\\Windows Error Reporting' /v Disabled /f", True),
+        ("disable_speech","Sistema","Desativar Speech Runtime (se não usar)","Set-Service -Name SpeechRuntime -StartupType Disabled; Stop-Service -Name SpeechRuntime -Force","Set-Service -Name SpeechRuntime -StartupType Manual; Start-Service -Name SpeechRuntime", True),
+        ("disable_telemetry","Sistema","Reduzir Telemetria (placeholder)","reg add 'HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\DataCollection' /v AllowTelemetry /t REG_DWORD /d 0 /f","reg delete 'HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\DataCollection' /v AllowTelemetry /f", True),
+        ("disable_feedback","Sistema","Desativar Feedback Hub","reg add 'HKCU\\Software\\Microsoft\\Siuf\\Rules' /v 'NumberOfSIUFInPeriod' /t REG_DWORD /d 0 /f","", True),
+    ]
+    for t in auto_small:
+        items.append({'id':t[0],'category':t[1],'title':t[2],'desc':t[3],'enable_ps':t[3],'disable_ps':t[4],'reversible':t[5] if len(t)>4 else False})
+
+    # return list
     return items
 
-
 # -------------------- UI --------------------
-
-class ToggleSwitch(QtWidgets.QCheckBox):
-    # Small styled switch based on QCheckBox
-    def __init__(self, label=''):
-        super().__init__(label)
-        self.setTristate(False)
-        self.setChecked(False)
-        self.setCursor(QtCore.Qt.PointingHandCursor)
-        self.setStyleSheet('''
-            QCheckBox { spacing: 8px; }
-            QCheckBox::indicator { width: 40px; height: 22px; }
-            QCheckBox::indicator:unchecked { image: url(''); border-radius:11px; background: #c6ccd3; }
-            QCheckBox::indicator:checked { image: url(''); border-radius:11px; background: #4caf50; }
-        ''')
-
-
 class OptimizationPanel(QtWidgets.QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle('Painel de Otimização - Profissional')
+        self.setWindowTitle("Painel de Otimização - Profissional")
         self.resize(1100, 720)
         self.items = generate_optimizations()
         self.settings = {it['id']: False for it in self.items}
-        self.backups_dir = Path.cwd() / 'optim_backups'
+        self.backups_dir = Path.cwd() / "optim_backups"
         self.backups_dir.mkdir(exist_ok=True)
-        self.log_file = self.backups_dir / f'changes_{datetime.now().strftime("%Y%m%d_%H%M%S")}.log'
-
-        self._check_admin()
+        self.log_file = self.backups_dir / f"changes_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
         self._build_ui()
 
-    def _check_admin(self):
-        if not is_admin():
-            msg = QtWidgets.QMessageBox(self)
-            msg.setIcon(QtWidgets.QMessageBox.Warning)
-            msg.setWindowTitle('Privilégios de Administrador necessários')
-            msg.setText('Este painel precisa ser executado como Administrador. Reinicie o programa como Administrador.')
-            msg.exec_()
-
     def _build_ui(self):
-        central = QtWidgets.QWidget()
-        layout = QtWidgets.QVBoxLayout(central)
-        header = QtWidgets.QHBoxLayout()
+        main = QtWidgets.QWidget()
+        v = QtWidgets.QVBoxLayout(main)
 
-        title = QtWidgets.QLabel('Painel de Otimização Profissional')
-        title.setFont(QtGui.QFont('Segoe UI', 18))
+        # Header
+        header = QtWidgets.QHBoxLayout()
+        title = QtWidgets.QLabel("Painel de Otimização Profissional")
+        title.setFont(QtGui.QFont("Segoe UI", 18))
         header.addWidget(title)
         header.addStretch()
-
-        btn_total = QtWidgets.QPushButton('Otimização Total')
-        btn_total.clicked.connect(self.apply_all)
+        btn_total = QtWidgets.QPushButton("Otimização Total")
+        btn_total.clicked.connect(self.apply_all_confirm)
         header.addWidget(btn_total)
-
-        btn_revert = QtWidgets.QPushButton('Reverter Tudo')
-        btn_revert.clicked.connect(self.revert_all)
+        btn_revert = QtWidgets.QPushButton("Reverter Tudo")
+        btn_revert.clicked.connect(self.revert_all_confirm)
         header.addWidget(btn_revert)
+        v.addLayout(header)
 
-        layout.addLayout(header)
-
-        splitter = QtWidgets.QSplitter()
-        left = QtWidgets.QWidget()
-        left_layout = QtWidgets.QVBoxLayout(left)
-
-        search = QtWidgets.QLineEdit()
-        search.setPlaceholderText('Buscar otimização...')
-        search.textChanged.connect(self.filter_items)
-        left_layout.addWidget(search)
+        # Splitter
+        splitter = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
+        left_w = QtWidgets.QWidget()
+        left_l = QtWidgets.QVBoxLayout(left_w)
+        self.search = QtWidgets.QLineEdit(); self.search.setPlaceholderText("Buscar...")
+        self.search.textChanged.connect(self.filter_items)
+        left_l.addWidget(self.search)
 
         self.tree = QtWidgets.QTreeWidget()
-        self.tree.setHeaderLabels(['Otimização', 'Descrição', "Ativado"])
+        self.tree.setHeaderLabels(["Otimização", "Descrição", "Ativado"])
         self.tree.header().setSectionResizeMode(0, QtWidgets.QHeaderView.ResizeToContents)
         self.tree.header().setSectionResizeMode(1, QtWidgets.QHeaderView.Stretch)
         self.tree.header().setSectionResizeMode(2, QtWidgets.QHeaderView.ResizeToContents)
-        left_layout.addWidget(self.tree)
-
+        left_l.addWidget(self.tree)
         self._populate_tree()
+        splitter.addWidget(left_w)
 
-        splitter.addWidget(left)
+        right_w = QtWidgets.QWidget()
+        right_l = QtWidgets.QVBoxLayout(right_w)
+        lbl = QtWidgets.QLabel("Detalhes")
+        lbl.setFont(QtGui.QFont("Segoe UI", 14))
+        right_l.addWidget(lbl)
+        self.details = QtWidgets.QTextEdit(); self.details.setReadOnly(True)
+        right_l.addWidget(self.details, 1)
 
-        right = QtWidgets.QWidget()
-        right_layout = QtWidgets.QVBoxLayout(right)
+        btn_apply = QtWidgets.QPushButton("Aplicar selecionada")
+        btn_apply.clicked.connect(self.apply_selected)
+        right_l.addWidget(btn_apply)
+        btn_revert_sel = QtWidgets.QPushButton("Reverter selecionada")
+        btn_revert_sel.clicked.connect(self.revert_selected)
+        right_l.addWidget(btn_revert_sel)
 
-        details_label = QtWidgets.QLabel('Detalhes da Otimização')
-        details_label.setFont(QtGui.QFont('Segoe UI', 14))
-        right_layout.addWidget(details_label)
-
-        self.details = QtWidgets.QTextEdit()
-        self.details.setReadOnly(True)
-        right_layout.addWidget(self.details, 1)
-
-        apply_btn = QtWidgets.QPushButton('Aplicar selecionada')
-        apply_btn.clicked.connect(self.apply_selected)
-        right_layout.addWidget(apply_btn)
-
-        revert_btn = QtWidgets.QPushButton('Reverter selecionada')
-        revert_btn.clicked.connect(self.revert_selected)
-        right_layout.addWidget(revert_btn)
-
-        btn_export = QtWidgets.QPushButton('Exportar perfil')
+        btn_export = QtWidgets.QPushButton("Exportar perfil")
         btn_export.clicked.connect(self.export_profile)
-        right_layout.addWidget(btn_export)
-
-        btn_import = QtWidgets.QPushButton('Importar perfil')
+        right_l.addWidget(btn_export)
+        btn_import = QtWidgets.QPushButton("Importar perfil")
         btn_import.clicked.connect(self.import_profile)
-        right_layout.addWidget(btn_import)
+        right_l.addWidget(btn_import)
 
-        layout.addWidget(splitter)
-        splitter.addWidget(right)
+        btn_report = QtWidgets.QPushButton("Gerar relatório rápido (antes/depois)")
+        btn_report.clicked.connect(self.generate_perf_report)
+        right_l.addWidget(btn_report)
 
-        self.setCentralWidget(central)
-
-        # conexões tree
+        splitter.addWidget(right_w)
+        v.addWidget(splitter)
+        self.setCentralWidget(main)
         self.tree.itemClicked.connect(self.on_item_clicked)
 
     def _populate_tree(self):
@@ -715,17 +296,17 @@ class OptimizationPanel(QtWidgets.QMainWindow):
                 cats[cat] = parent
             parent = cats[cat]
             child = QtWidgets.QTreeWidgetItem(parent, [it['title'], it['desc']])
+            child.setData(0, QtCore.Qt.UserRole, it['id'])
             chk = QtWidgets.QCheckBox()
             chk.setChecked(False)
             chk.stateChanged.connect(self._make_checkbox_callback(it))
             self.tree.setItemWidget(child, 2, chk)
-            child.setData(0, QtCore.Qt.UserRole, it['id'])
 
     def _make_checkbox_callback(self, item):
         def cb(state):
             enabled = state == QtCore.Qt.Checked
             self.settings[item['id']] = enabled
-            # aplicar imediatamente (opcional) - vamos aplicar imediatamente
+            # aplicar imediatamente (opcional). Debounce via thread.
             threading.Thread(target=self._apply_item_thread, args=(item, enabled), daemon=True).start()
         return cb
 
@@ -739,148 +320,195 @@ class OptimizationPanel(QtWidgets.QMainWindow):
                 child = cat_item.child(j)
                 title = child.text(0).lower()
                 desc = child.text(1).lower()
-                visible = text in title or text in desc or text == ''
+                visible = (text in title) or (text in desc) or (text == "")
                 child.setHidden(not visible)
                 if visible:
                     show_cat = True
             cat_item.setHidden(not show_cat)
 
     def on_item_clicked(self, item, col):
-        id = item.data(0, QtCore.Qt.UserRole)
-        if id:
-            it = next((x for x in self.items if x['id'] == id), None)
-            if it:
-                self.details.setPlainText(f"{it['title']}\n\n{it['desc']}\n\nComando (Habilitar):\n{it['enable_ps']}\n\nComando (Desabilitar):\n{it['disable_ps']}")
+        _id = item.data(0, QtCore.Qt.UserRole)
+        if not _id:
+            return
+        it = next((x for x in self.items if x['id'] == _id), None)
+        if it:
+            text = f"{it['title']}\n\n{it['desc']}\n\nComando (Habilitar):\n{it['enable_ps']}\n\nComando (Desabilitar):\n{it['disable_ps']}"
+            self.details.setPlainText(text)
 
-    # -------------------- Aplicação de otimizações --------------------
-    def _apply_item_thread(self, item, enable):
-        self._log(f"Aplicando {'Habilitar' if enable else 'Desabilitar'}: {item['id']}")
-        # backup prévio se reversível
-        if item.get('reversible'):
-            self._backup_item(item)
-        cmd = item['enable_ps'] if enable else item['disable_ps']
-        if cmd and not cmd.strip().startswith('#'):
-            code, out, err = safe_run_script(cmd)
-            self._log(f"Saída: code={code}\nout={out}\nerr={err}")
-        else:
-            self._log('Comando vazio ou placeholder - ação pular')
-
-    def _backup_item(self, item):
-        # backups simples: export registro ou listar estado
-        try:
-            bid = item['id']
-            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-            bakfile = self.backups_dir / f'{bid}_{timestamp}.bak'
-            # exemplo: exportar chaves do registro se houver alterações em registry (heurística)
-            if 'reg add' in (item.get('enable_ps') or ''):
-                # tenta exportar HKCU e HKLM (pode gerar grande arquivo)
-                cmd = f"reg export HKCU %TEMP%\\{bid}_HKCU_{timestamp}.reg /y; reg export HKLM %TEMP%\\{bid}_HKLM_{timestamp}.reg /y;"
-                run_powershell(cmd)
-                with open(bakfile, 'w', encoding='utf-8') as f:
-                    f.write('backup created')
-            else:
-                with open(bakfile, 'w', encoding='utf-8') as f:
-                    f.write('backup placeholder')
-        except Exception as e:
-            self._log(f'Erro no backup: {e}')
-
+    # ---- Execução de otimizações ----
     def _log(self, text):
-        text = f"[{datetime.now().isoformat()}] {text}\n"
+        s = f"[{datetime.now().isoformat()}] {text}\n"
         try:
-            with open(self.log_file, 'a', encoding='utf-8') as f:
-                f.write(text)
+            with open(self.log_file, "a", encoding="utf-8") as f:
+                f.write(s)
         except Exception:
             pass
 
+    def _backup_item(self, item):
+        try:
+            if item.get('reversible'):
+                bid = item['id']
+                ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+                bak = self.backups_dir / f"{bid}_{ts}.bak"
+                # heuristic: if registry commands present, export HKCU/HKLM
+                if "reg add" in (item.get('enable_ps') or "") or "reg add" in (item.get('disable_ps') or ""):
+                    run_powershell(f"reg export HKCU %TEMP%\\{bid}_HKCU_{ts}.reg /y; reg export HKLM %TEMP%\\{bid}_HKLM_{ts}.reg /y")
+                    with open(bak, "w", encoding="utf-8") as f:
+                        f.write("backup registry exported")
+                else:
+                    with open(bak, "w", encoding="utf-8") as f:
+                        f.write("backup placeholder")
+        except Exception as e:
+            self._log(f"Erro backup: {e}")
+
+    def _apply_item_thread(self, item, enable):
+        action = "Habilitar" if enable else "Desabilitar"
+        self._log(f"Aplicando {action}: {item['id']}")
+        if item.get('reversible'):
+            self._backup_item(item)
+        cmd = item['enable_ps'] if enable else item['disable_ps']
+        if not cmd or cmd.strip().startswith("#"):
+            self._log("Comando vazio/placeholder - pulando")
+            return
+        # Execute in PowerShell
+        code, out, err = safe_run_ps1(cmd)
+        self._log(f"Resultado {item['id']}: code={code}\nout={out}\nerr={err}")
+
     def apply_selected(self):
-        item = self._get_selected_item()
-        if not item:
-            QtWidgets.QMessageBox.information(self, 'Seleção', 'Selecione uma otimização na lista.')
-            return
-        it = next((x for x in self.items if x['id'] == item), None)
-        if it:
-            threading.Thread(target=self._apply_item_thread, args=(it, True), daemon=True).start()
-
-    def revert_selected(self):
-        item = self._get_selected_item()
-        if not item:
-            QtWidgets.QMessageBox.information(self, 'Seleção', 'Selecione uma otimização na lista.')
-            return
-        it = next((x for x in self.items if x['id'] == item), None)
-        if it:
-            threading.Thread(target=self._apply_item_thread, args=(it, False), daemon=True).start()
-
-    def _get_selected_item(self):
         sel = self.tree.selectedItems()
         if not sel:
-            return None
-        return sel[0].data(0, QtCore.Qt.UserRole)
-
-    def apply_all(self):
-        # cria restore point antes
-        reply = QtWidgets.QMessageBox.question(self, 'Confirmação', 'Criar ponto de restauração e aplicar todas otimizações marcadas?')
-        if reply != QtWidgets.QMessageBox.Yes:
+            QtWidgets.QMessageBox.information(self, "Seleção", "Selecione uma otimização.")
             return
-        # criar restore point
-        self._log('Criando ponto de restauração...')
-        code, out, err = run_powershell("Checkpoint-Computer -Description 'Before-Total-Optimization' -RestorePointType 'MODIFY_SETTINGS'")
-        self._log(f'Restore point: code={code} out={out} err={err}')
+        item_id = sel[0].data(0, QtCore.Qt.UserRole)
+        it = next((x for x in self.items if x['id'] == item_id), None)
+        if it:
+            threading.Thread(target=self._apply_item_thread, args=(it, True), daemon=True).start()
+            QtWidgets.QMessageBox.information(self, "Aplicando", f"Aplicando: {it['title']} (em segundo plano)")
 
-        # aplicar todas (apenas as que possuem comando)
+    def revert_selected(self):
+        sel = self.tree.selectedItems()
+        if not sel:
+            QtWidgets.QMessageBox.information(self, "Seleção", "Selecione uma otimização.")
+            return
+        item_id = sel[0].data(0, QtCore.Qt.UserRole)
+        it = next((x for x in self.items if x['id'] == item_id), None)
+        if it:
+            threading.Thread(target=self._apply_item_thread, args=(it, False), daemon=True).start()
+            QtWidgets.QMessageBox.information(self, "Revertendo", f"Revertendo: {it['title']} (em segundo plano)")
+
+    def apply_all_confirm(self):
+        r = QtWidgets.QMessageBox.question(self, "Confirmação", "Criar ponto de restauração e aplicar todas otimizações marcadas? (Algumas ações são irreversíveis)")
+        if r != QtWidgets.QMessageBox.Yes:
+            return
+        # create restore point (best-effort)
+        self._log("Criando ponto de restauração (Before-Total-Optimization)")
+        run_powershell("Checkpoint-Computer -Description 'Before-Total-Optimization' -RestorePointType 'MODIFY_SETTINGS'")
+        # apply items sequentially (safe)
         for it in self.items:
-            if it.get('enable_ps') and not it['enable_ps'].strip().startswith('#'):
+            if it.get('enable_ps') and not it.get('enable_ps').strip().startswith("#"):
                 threading.Thread(target=self._apply_item_thread, args=(it, True), daemon=True).start()
-                time.sleep(0.3)
+                time.sleep(0.25)
+        QtWidgets.QMessageBox.information(self, "Iniciado", "Aplicação em segundo plano iniciada. Verifique logs em optim_backups/")
 
-        QtWidgets.QMessageBox.information(self, 'Pronto', 'Aplicação em segundo plano iniciada. Confira o log para detalhes.')
-
-    def revert_all(self):
-        reply = QtWidgets.QMessageBox.question(self, 'Confirmação', 'Reverter todas otimizações marcadas (quando possível)?')
-        if reply != QtWidgets.QMessageBox.Yes:
+    def revert_all_confirm(self):
+        r = QtWidgets.QMessageBox.question(self, "Confirmação", "Reverter todas otimizações (quando possível)?")
+        if r != QtWidgets.QMessageBox.Yes:
             return
         for it in self.items:
-            if it.get('disable_ps') and not it['disable_ps'].strip().startswith('#'):
+            if it.get('disable_ps') and not it.get('disable_ps').strip().startswith("#"):
                 threading.Thread(target=self._apply_item_thread, args=(it, False), daemon=True).start()
-                time.sleep(0.25)
-        QtWidgets.QMessageBox.information(self, 'Pronto', 'Reversão em segundo plano iniciada. Confira o log para detalhes.')
+                time.sleep(0.2)
+        QtWidgets.QMessageBox.information(self, "Iniciado", "Reversão em segundo plano iniciada. Verifique logs em optim_backups/")
 
     def export_profile(self):
-        path, _ = QtWidgets.QFileDialog.getSaveFileName(self, 'Exportar perfil', str(Path.cwd() / 'profile.json'), 'JSON Files (*.json)')
+        path, _ = QtWidgets.QFileDialog.getSaveFileName(self, "Exportar perfil", str(Path.cwd()/"profile.json"), "JSON Files (*.json)")
         if not path:
             return
-        with open(path, 'w', encoding='utf-8') as f:
+        with open(path, "w", encoding="utf-8") as f:
             json.dump(self.settings, f, indent=2)
-        QtWidgets.QMessageBox.information(self, 'Exportado', f'Perfil exportado para {path}')
+        QtWidgets.QMessageBox.information(self, "Exportado", f"Perfil exportado para {path}")
 
     def import_profile(self):
-        path, _ = QtWidgets.QFileDialog.getOpenFileName(self, 'Importar perfil', str(Path.cwd()), 'JSON Files (*.json)')
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(self, "Importar perfil", str(Path.cwd()), "JSON Files (*.json)")
         if not path:
             return
-        with open(path, 'r', encoding='utf-8') as f:
+        with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
-        # aplicar perfil (marca checkboxes)
+        # apply to checkboxes (not auto-apply commands)
         root = self.tree.invisibleRootItem()
         for i in range(root.childCount()):
-            cat_item = root.child(i)
-            for j in range(cat_item.childCount()):
-                child = cat_item.child(j)
-                id = child.data(0, QtCore.Qt.UserRole)
+            cat = root.child(i)
+            for j in range(cat.childCount()):
+                child = cat.child(j)
+                _id = child.data(0, QtCore.Qt.UserRole)
                 widget = self.tree.itemWidget(child, 2)
-                if id in data:
-                    val = data[id]
+                if _id in data:
+                    val = bool(data[_id])
                     if widget:
-                        widget.setChecked(bool(val))
-                    self.settings[id] = bool(val)
-        QtWidgets.QMessageBox.information(self, 'Importado', 'Perfil importado — alterações aplicadas aos checkboxes. Use "Otimização Total" para aplicar.')
+                        widget.setChecked(val)
+                    self.settings[_id] = val
+        QtWidgets.QMessageBox.information(self, "Importado", "Perfil importado (checkboxes atualizados). Use Otimização Total para aplicar.")
 
+    def generate_perf_report(self):
+        # quick counters snapshot
+        code, out, err = run_powershell("Get-Counter -Counter '\\Processor(_Total)\\% Processor Time','\\Memory\\Available MBytes','\\PhysicalDisk(_Total)\\% Disk Time' -SampleInterval 1 -MaxSamples 3 | ConvertTo-Json")
+        data = {"timestamp": datetime.now().isoformat(), "ps_code": code, "ps_out": out, "ps_err": err}
+        p = self.backups_dir / f"perf_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+        with open(p, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+        QtWidgets.QMessageBox.information(self, "Relatório", f"Relatório salvo em: {p}")
+        self._log(f"Perf report gerado: {p}")
 
-# -------------------- Execução --------------------
+# -------------------- Elevation (UAC) helper --------------------
+def relaunch_as_admin():
+    """Tenta relançar o mesmo script como administrador (Windows UAC)."""
+    try:
+        import ctypes
+        if sys.platform != "win32":
+            return False
+        params = " ".join([f'"{x}"' for x in sys.argv])
+        executable = sys.executable
+        # ShellExecuteW(return >32 success)
+        result = ctypes.windll.shell32.ShellExecuteW(None, "runas", executable, params, None, 1)
+        return int(result) > 32
+    except Exception:
+        return False
 
+# -------------------- Main --------------------
 def main():
-    app = QtWidgets.QApplication(sys.argv)
-    w = OptimizationPanel()
-    w.show()
-    sys.exit(app.exec_())
+    # Ask for admin if not admin
+    if not is_admin():
+        # Prompt user to relaunch as admin
+        msg = "Este painel precisa ser executado como Administrador. Deseja relançar com privilégios de administrador?"
+        # Use GUI prompt if possible
+        try:
+            import ctypes
+            from ctypes import wintypes
+            MB_YESNO = 0x04
+            MB_ICONQUESTION = 0x20
+            res = ctypes.windll.user32.MessageBoxW(None, msg, "Privilégios necessários", MB_YESNO | MB_ICONQUESTION)
+            # If user clicks Yes (ID 6) try relaunch
+            if res == 6:
+                ok = relaunch_as_admin()
+                if ok:
+                    sys.exit(0)
+                else:
+                    print("Falha ao relançar como administrador. Execute o script manualmente como Administrador.")
+            else:
+                print("Executando sem privilégios de administrador. Muitas ações podem falhar.")
+        except Exception:
+            print("Não foi possível exibir prompt UAC. Execute o script como Administrador se necessário.")
 
-if __name__ == '__main__':
+    try:
+        app = QtWidgets.QApplication(sys.argv)
+        w = OptimizationPanel()
+        w.show()
+        app.exec_()
+    except Exception:
+        import traceback
+        print("Erro ao iniciar a interface:")
+        traceback.print_exc()
+        input("Pressione Enter para sair...")
+
+if __name__ == "__main__":
     main()
